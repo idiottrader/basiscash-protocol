@@ -62,6 +62,14 @@ import '@openzeppelin/contracts/token/ERC20/SafeERC20.sol';
 
 import '../interfaces/IRewardDistributionRecipient.sol';
 
+/**
+ * Basis Cash BACDAIPool合约
+ * 实现功能：
+ * 1.BACDAIPool,挖矿池，抵押DAI收获BAC
+ * 2.计算BAC生成发放的规则
+ * 注解：TimBear 20210107
+ */
+
 contract DAIWrapper {
     using SafeMath for uint256;
     using SafeERC20 for IERC20;
@@ -79,12 +87,18 @@ contract DAIWrapper {
         return _balances[account];
     }
 
+    /**
+     *@notice 抵押DAI进池子
+     */
     function stake(uint256 amount) public virtual {
         _totalSupply = _totalSupply.add(amount);
         _balances[msg.sender] = _balances[msg.sender].add(amount);
         dai.safeTransferFrom(msg.sender, address(this), amount);
     }
 
+    /**
+     *@notice 从池子中取出DAI
+     */
     function withdraw(uint256 amount) public virtual {
         _totalSupply = _totalSupply.sub(amount);
         _balances[msg.sender] = _balances[msg.sender].sub(amount);
@@ -94,6 +108,7 @@ contract DAIWrapper {
 
 contract BACDAIPool is DAIWrapper, IRewardDistributionRecipient {
     IERC20 public basisCash;
+    //DAI池挖矿周期为5天
     uint256 public DURATION = 5 days;
 
     uint256 public starttime;
@@ -105,11 +120,13 @@ contract BACDAIPool is DAIWrapper, IRewardDistributionRecipient {
     mapping(address => uint256) public rewards;
     mapping(address => uint256) public deposits;
 
+    //触发事件：奖励增加 抵押 取款 奖励发放
     event RewardAdded(uint256 reward);
     event Staked(address indexed user, uint256 amount);
     event Withdrawn(address indexed user, uint256 amount);
     event RewardPaid(address indexed user, uint256 reward);
 
+    //构造函数
     constructor(
         address basisCash_,
         address dai_,
@@ -120,11 +137,13 @@ contract BACDAIPool is DAIWrapper, IRewardDistributionRecipient {
         starttime = starttime_;
     }
 
+    //修饰符：满足开始时间
     modifier checkStart() {
         require(block.timestamp >= starttime, 'BACDAIPool: not start');
         _;
     }
 
+    //修饰符：更新账户奖励
     modifier updateReward(address account) {
         rewardPerTokenStored = rewardPerToken();
         lastUpdateTime = lastTimeRewardApplicable();
@@ -161,6 +180,9 @@ contract BACDAIPool is DAIWrapper, IRewardDistributionRecipient {
                 .add(rewards[account]);
     }
 
+    /**
+     *@notice 抵押DAI进池子
+     */
     // stake visibility is public as overriding LPTokenWrapper's stake() function
     function stake(uint256 amount)
         public
@@ -170,15 +192,20 @@ contract BACDAIPool is DAIWrapper, IRewardDistributionRecipient {
     {
         require(amount > 0, 'BACDAIPool: Cannot stake 0');
         uint256 newDeposit = deposits[msg.sender].add(amount);
+        //限制每个账户抵押总量不超过20000DAI
         require(
             newDeposit <= 20000e18,
             'BACDAIPool: deposit amount exceeds maximum 20000'
         );
         deposits[msg.sender] = newDeposit;
         super.stake(amount);
+        //触发抵押事件
         emit Staked(msg.sender, amount);
     }
 
+    /**
+     *@notice 从池子中取出DAI
+     */
     function withdraw(uint256 amount)
         public
         override
@@ -188,23 +215,35 @@ contract BACDAIPool is DAIWrapper, IRewardDistributionRecipient {
         require(amount > 0, 'BACDAIPool: Cannot withdraw 0');
         deposits[msg.sender] = deposits[msg.sender].sub(amount);
         super.withdraw(amount);
+        //触发取款事件
         emit Withdrawn(msg.sender, amount);
     }
 
+    /**
+     *@notice 从池子中取出DAI,并取出奖励
+     */
     function exit() external {
         withdraw(balanceOf(msg.sender));
         getReward();
     }
 
+    /**
+     *@notice 取出奖励
+     */
     function getReward() public updateReward(msg.sender) checkStart {
         uint256 reward = earned(msg.sender);
         if (reward > 0) {
             rewards[msg.sender] = 0;
+            //挖矿奖励为BAC，发送至合约调用者
             basisCash.safeTransfer(msg.sender, reward);
+            //触发发送奖励事件
             emit RewardPaid(msg.sender, reward);
         }
     }
 
+    /**
+     *@notice 
+     */
     function notifyRewardAmount(uint256 reward)
         external
         override
