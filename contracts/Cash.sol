@@ -6,6 +6,7 @@ import './owner/Operator.sol';
 contract Cash is ERC20Burnable, Operator {
     /**
      * @notice Constructs the Basis Cash ERC-20 contract.
+     * @notice 发行BAC代币
      */
     constructor() public ERC20('BAC', 'BAC') {
         // Mints 1 Basis Cash to contract creator for initial Uniswap oracle deployment.
@@ -23,6 +24,7 @@ contract Cash is ERC20Burnable, Operator {
 
     /**
      * @notice Operator mints basis cash to a recipient
+     * @notice BAC代币的铸造方法
      * @param recipient_ The address of recipient
      * @param amount_ The amount of basis cash to mint to
      * @return whether the process has been done
@@ -33,16 +35,23 @@ contract Cash is ERC20Burnable, Operator {
         returns (bool)
     {
         uint256 balanceBefore = balanceOf(recipient_);
+        //仅Operator有权限铸造，并发送给recipient_
         _mint(recipient_, amount_);
         uint256 balanceAfter = balanceOf(recipient_);
 
         return balanceAfter > balanceBefore;
     }
 
+    /**
+     * @notice BAC代币的销毁方法，仅Operato有权限销毁
+     */
     function burn(uint256 amount) public override onlyOperator {
         super.burn(amount);
     }
 
+    /**
+     * @notice BAC代币的销毁方法，仅Operato有权限销毁，配合approve方法一起用
+     */
     function burnFrom(address account, uint256 amount)
         public
         override
