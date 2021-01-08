@@ -2,9 +2,11 @@
 /**
  *Treasury合约中BasisDollar相对于BasisCash的修改：
  *在BasisCash基础上增加了许多货币政策管理的细节，如：
- *限制单次增发比例：前14 epochs单次增发比例不超过9%，其余次增发比例不超过4.5%
- *单次增发的BAC至少35%比例给到董事会
- *销毁BSD换取BSDB时，单次至多占BAC供应量的4.5%
+ *限制单次增发比例：前14 epochs单次固定增发比例为9%，其余次增发比例最高不超过4.5%,除非国库储备量小于bond总供应量
+ *根据bond的供应量，调整增发量，且调整给国库和董事会的比例:
+ *    1.国库储备量>bond供应量时，最高增发4.5%，且全部增发至董事会
+ *    2.国库储备量<bond供应量时，最高增发9%，增发数量35%归董事会，剩下的到国库储备
+ *增发给董事会的数量中，25%归lp，75%归share抵押者
  *等等  每次提议管理员都可对货币政策进行灵活修改，更加细致
  */
 
@@ -183,14 +185,16 @@ contract Treasury is ContractGuard {
         bondDepletionFloorPercent = 10000; // 100% of Bond supply for depletion floor
         //单次增发的BAC至少35%比例给到董事会
         seigniorageExpansionFloorPercent = 3500; // At least 35% of expansion reserved for boardroom
-        //销毁BSD换取BSDB时，单次至多占BAC供应量的4.5%
+        //销毁BSD换取BSDB时，单次至多占BAC供应量的4.5%,暂时没用到，待以后使用
         maxSupplyContractionPercent = 450; // Upto 4.5% supply for contraction (to burn BSD and mint BSDB)
-        //至多35%的BSDB可于市面上流通购买
+        //至多35%的BSDB可于市面上流通购买，暂时没用到，待以后使用
         maxDeptRatioPercent = 3500; // Upto 35% supply of BSDB to purchase
 
         // BDIP01: 75% of X $BSD from expansion to BSDS stakers and 25% to LPs for 14 epochs
+        //前14 epochs，增发的dollar的75%给到Share的抵押者，25%给到lp
         bdip01SharedIncentiveForLpEpochs = 14;
         bdip01SharedIncentiveForLpPercent = 2500;
+        //4个lp池子
         bdip01LiquidityPools = [
             address(0x71661297e9784f08fd5d840D4340C02e52550cd9), // DAI/BSD
             address(0x9E7a4f7e4211c0CE4809cE06B9dDA6b95254BaaC), // USDC/BSD
@@ -338,55 +342,80 @@ contract Treasury is ContractGuard {
         emit RedeemedBonds(msg.sender, amount);
     }
 
+    /**
+     *@notice 把铸币发放到董事会
+     */
     function _sendToBoardRoom(uint256 _amount) internal {
+        //铸造董事会新增的dollar数量
         IBasisAsset(dollar).mint(address(this), _amount);
         if (epoch < bdip01SharedIncentiveForLpEpochs) {
+            //前14 Epochs, 新增发dollar的25%给到lp
             uint256 _addedPoolReward = _amount.mul(bdip01SharedIncentiveForLpPercent).div(40000);
             for (uint256 i = 0; i < 4; i++) {
                 IERC20(dollar).transfer(bdip01LiquidityPools[i], _addedPoolReward);
+                //已发放给lp的数量需要减掉
                 _amount = _amount.sub(_addedPoolReward);
             }
         }
         IERC20(dollar).safeApprove(boardroom, _amount);
+        //调用Boardroom合约的allocateSeigniorage方法,把剩下的75%分配给share抵押者
         IBoardroom(boardroom).allocateSeigniorage(_amount);
+        //触发发放董事会事件
         emit BoardroomFunded(now, _amount);
     }
 
+    /**
+     *@notice 分配铸币方法
+     */
     function allocateSeigniorage() external onlyOneBlock checkCondition checkEpoch checkOperator {
         _updateDollarPrice();
+        //dollar的流通量 = 总供应量 - 总储备量
         uint256 dollarSupply = IERC20(dollar).totalSupply().sub(seigniorageSaved);
         // BDIP02: 14 first epochs with 9% max expansion
         if (epoch < bdip02BootstrapEpochs) {
+            //在前14 epochs的增发模式:dollar新增发量 = dollar的流通量 * 9%,且不要求dollar价格
             _sendToBoardRoom(dollarSupply.mul(bdip02BootstrapSupplyExpansionPercent).div(10000));
         } else {
             uint256 dollarPrice = getDollarPrice();
             if (dollarPrice > dollarPriceCeiling) {
+                //要求dollar价格大于1.05
                 // Expansion ($BSD Price > 1$): there is some seigniorage to be allocated
                 uint256 bondSupply = IERC20(bond).totalSupply();
+                //增发比例 = dollar价格 - 1
                 uint256 _percentage = dollarPrice.sub(dollarPriceOne);
                 uint256 _savedForBond;
                 uint256 _savedForBoardRoom;
+                //当dollar储备量大于bond总供应量*100%时,限制最大增发比例4.5%,且全部增发给董事会
                 if (seigniorageSaved >= bondSupply.mul(bondDepletionFloorPercent).div(10000)) {// saved enough to pay dept, mint as usual rate
                     uint256 _mse = maxSupplyExpansionPercent.mul(1e14);
                     if (_percentage > _mse) {
+                        //限制最大增发比例4.5%
                         _percentage = _mse;
                     }
+                    //董事会新增储备量
                     _savedForBoardRoom = dollarSupply.mul(_percentage).div(1e18);
                 } else {// have not saved enough to pay dept, mint double
+                    //当dollar储备量小于bond总供应量*100%时,限制最大增发比例4.5%*2=9%，35%增发给董事会，剩下的增发给国库储备,以应对未来可能bond的兑换
                     uint256 _mse = maxSupplyExpansionPercent.mul(2e14);
                     if (_percentage > _mse) {
                         _percentage = _mse;
                     }
                     uint256 _seigniorage = dollarSupply.mul(_percentage).div(1e18);
+                    //新增发的dollar中35%给到董事会
                     _savedForBoardRoom = _seigniorage.mul(seigniorageExpansionFloorPercent).div(10000);
+                    //剩下的给到国库的储备，以应对未来可能bond的兑换
                     _savedForBond = _seigniorage.sub(_savedForBoardRoom);
                 }
                 if (_savedForBoardRoom > 0) {
+                    //如果董事会新增储备量大于0，则把新增数量发送到董事会
                     _sendToBoardRoom(_savedForBoardRoom);
                 }
                 if (_savedForBond > 0) {
+                    //如果新增国库储备数量大于0，则把新增数量加入到国库总储备量中
                     seigniorageSaved = seigniorageSaved.add(_savedForBond);
+                    //铸造国库储备中新增的dollar
                     IBasisAsset(dollar).mint(address(this), _savedForBond);
+                    //触发发送国库事件
                     emit TreasuryFunded(now, _savedForBond);
                 }
             }

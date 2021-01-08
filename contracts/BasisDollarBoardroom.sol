@@ -229,6 +229,9 @@ contract Boardroom is ShareWrapper, ContractGuard {
         }
     }
 
+    /**
+     *@notice 董事会中把铸币分配给share抵押者
+     */
     function allocateSeigniorage(uint256 amount) external onlyOneBlock onlyOperator {
         require(amount > 0, "Boardroom: Cannot allocate 0");
         require(totalSupply() > 0, "Boardroom: Cannot allocate when totalSupply is 0");
